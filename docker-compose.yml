@@ -1,0 +1,33 @@
+services:
+    app:
+        build: .
+        environment:
+            - ETL_HTTP_PORT=${ETL_HTTP_PORT}
+            - ETL_DB_DSN=postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable
+        ports:
+            - "${ETL_HTTP_PORT}:${ETL_HTTP_PORT}"
+        depends_on:
+            postgres:
+                condition: service_healthy
+      
+
+    postgres:
+        image: postgres:16
+        environment:
+            - POSTGRES_DB=${POSTGRES_DB}
+            - POSTGRES_USER=${POSTGRES_USER}
+            - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+        volumes:
+            - pgdata:/var/lib/postgresql/data
+        healthcheck:
+            test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+            interval: 3s
+            timeout: 3s
+            retries: 20
+        ports:
+            - "${POSTGRES_PORT:-5432}:5432"
+
+
+volumes:
+    pgdata:
+        
