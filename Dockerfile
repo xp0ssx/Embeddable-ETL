@@ -9,5 +9,6 @@ RUN go build -o /out/server ./cmd/server
 FROM debian:bookworm-slim
 WORKDIR /app
 COPY --from=build /out/server /app/server
+COPY --from=build /src/migrations /app/migrations
 EXPOSE 8080
 ENTRYPOINT [ "/app/server" ]

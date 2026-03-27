@@ -3,6 +3,7 @@ services:
         build: .
         environment:
             - ETL_HTTP_PORT=${ETL_HTTP_PORT}
+            - ETL_MIGRATIONS_DIR=${ETL_MIGRATIONS_DIR}
             - ETL_DB_DSN=postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable
         ports:
             - "${ETL_HTTP_PORT}:${ETL_HTTP_PORT}"

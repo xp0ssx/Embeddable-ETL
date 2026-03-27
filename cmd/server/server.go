@@ -23,20 +23,30 @@ func main() {
 		serverAddr = "8080"
 	}
 	serverAddr = ":" + serverAddr
+	migrationsDir := os.Getenv("ETL_MIGRATIONS_DIR")
+	if migrationsDir == "" {
+		migrationsDir = "migrations"
+	}
 
 	dbDSN := os.Getenv("ETL_DB_DSN")
 	if dbDSN == "" {
 		log.Fatalf("Fatal error: no data for DB connection")
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM) //Контекст завершения от докера
 	defer stop()
+
+	mctx, mcancel := context.WithTimeout(ctx, 30*time.Second)
+	defer mcancel()
 
 	pool, err := pgxpool.New(context.Background(), dbDSN)
 	if err != nil {
 		log.Fatalf("Fatal error: %v", err)
 	}
 	defer pool.Close()
+	if err := applyMigrations(mctx, pool, migrationsDir); err != nil {
+		log.Fatalf("Fatal error: %v", err)
+	}
 	app := &App{pool: pool}
 
 	mux := http.NewServeMux()
