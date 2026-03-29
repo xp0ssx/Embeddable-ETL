@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -39,7 +38,7 @@ func main() {
 	mctx, mcancel := context.WithTimeout(ctx, 30*time.Second)
 	defer mcancel()
 
-	pool, err := pgxpool.New(context.Background(), dbDSN)
+	pool, err := pgxpool.New(ctx, dbDSN)
 	if err != nil {
 		log.Fatalf("Fatal error: %v", err)
 	}
@@ -58,6 +57,7 @@ func main() {
 
 	mux.HandleFunc("/healthz", app.healthzHandler)
 	mux.HandleFunc("/readyz", app.readyzHandler)
+	mux.HandleFunc("/v1/runs", app.RunHandler)
 
 	serverErr := make(chan error, 1)
 	go func() {
@@ -87,39 +87,4 @@ func main() {
 		log.Printf("Server stopped with error: %v", listenErr)
 	}
 	log.Printf("Server stopped")
-}
-
-func (a *App) healthzHandler(writer http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writer.WriteHeader(http.StatusMethodNotAllowed)
-		return
-	}
-	writer.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	writer.WriteHeader(http.StatusOK)
-	if _, err := writer.Write([]byte("ok\n")); err != nil {
-		log.Printf("write response: %v", err)
-	}
-}
-
-func (a *App) readyzHandler(writer http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writer.WriteHeader(http.StatusMethodNotAllowed)
-		return
-	}
-	ctx, cancel := context.WithTimeout(r.Context(), 1*time.Second)
-	defer cancel()
-
-	writer.Header().Set("Content-Type", "text/plain; charset=utf-8")
-
-	if err := a.pool.Ping(ctx); err != nil {
-		writer.WriteHeader(http.StatusServiceUnavailable)
-		if _, werr := fmt.Fprintf(writer, "DB error: %v\n", err); werr != nil {
-			log.Printf("write response: %v", werr)
-		}
-		return
-	}
-	writer.WriteHeader(http.StatusOK)
-	if _, err := writer.Write([]byte("ok\n")); err != nil {
-		log.Printf("write response: %v", err)
-	}
 }
