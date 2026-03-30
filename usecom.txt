@@ -1,1 +1,2 @@
 docker compose exec postgres sh -lc 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
+curl -i -X POST "http://localhost:8000/v1/rows?run_id=19" -H "Content-Type: application/json" -d '{"email":"a@b.com","age":23}'
