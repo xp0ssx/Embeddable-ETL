@@ -2,7 +2,12 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"log"
+	"net/http"
+	"strconv"
+	"strings"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -84,4 +89,80 @@ func insertDeadLetter(ctx context.Context, pool *pgxpool.Pool, runID int, rawLin
 		return -1, err
 	}
 	return deadID, nil
+}
+
+func insertPipeline(ctx context.Context, pool *pgxpool.Pool, name string, schema json.RawMessage) (pipelineID int, err error) {
+	row := pool.QueryRow(ctx, `
+	INSERT INTO pipelines(name, schema)
+	VALUES ($1, $2)
+	RETURNING id;`, name, schema)
+	if err := row.Scan(&pipelineID); err != nil {
+		return -1, err
+	}
+	return pipelineID, nil
+}
+
+func getPipelineByID(ctx context.Context, pool *pgxpool.Pool, pipelineID int, pipeline *Pipeline) error {
+	row := pool.QueryRow(ctx, `
+	SELECT id, name, schema, created_at FROM pipelines
+	WHERE id=$1;`, pipelineID)
+	if err := row.Scan(&pipeline.ID, &pipeline.Name, &pipeline.Schema, &pipeline.CreatedAt); err != nil {
+		return err
+	}
+	return nil
+}
+
+var errEMPTY error = fmt.Errorf("empty")
+
+func getIDFromURL(r *http.Request, name string) (id int, err error) {
+	idStr := r.URL.Query().Get(name)
+	if idStr == "" {
+		return -1, errEMPTY
+	}
+	if id, err = strconv.Atoi(idStr); err != nil {
+		return -1, err
+	} else {
+		return id, nil
+	}
+}
+
+func validateRowRecord(schema Schema, header []string, record []string) (map[string]any, error) {
+	if len(record) != len(header) {
+		return nil, fmt.Errorf("wrong number of columns")
+	}
+	index := map[string]int{}
+	for id, colName := range header {
+		index[colName] = id
+	}
+	payload := map[string]any{}
+	for _, field := range schema.Fields {
+		idx, ok := index[field.Name]
+		if !ok {
+			if field.Required {
+				return nil, fmt.Errorf("missing required field %s", field.Name)
+			}
+			continue
+		}
+		rawVal := record[idx]
+		if strings.TrimSpace(rawVal) == "" {
+			if field.Required {
+				return nil, fmt.Errorf("required field %s is empty", field.Name)
+			}
+			continue
+		}
+		if _, err := parseValue(rawVal, field); err != nil {
+			return nil, err
+		}
+		if field.Format != "" {
+			if tester, ok := formatmap[field.Format]; !ok {
+				return nil, fmt.Errorf("unknown format: %s", field.Format)
+			} else {
+				if !tester(rawVal) {
+					return nil, fmt.Errorf("value %s is not approved by format %s", rawVal, field.Format)
+				}
+			}
+		}
+		payload[field.Name] = rawVal
+	}
+	return payload, nil
 }
