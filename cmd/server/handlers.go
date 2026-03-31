@@ -2,12 +2,14 @@ package main
 
 import (
 	"context"
+	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -54,20 +56,17 @@ func (a *App) RunHandler(writer http.ResponseWriter, r *http.Request) {
 	case http.MethodPost:
 		{
 			writer.Header().Set("Content-Type", "application/json; charset=utf-8")
-			val := a.pool.QueryRow(ctx, `
-				INSERT INTO runs DEFAULT VALUES
-				RETURNING id;
-				`)
-			id := -1
-			if err := val.Scan(&id); err != nil {
+			runID, err := createRun(ctx, a.pool)
+			if err != nil {
 				writer.WriteHeader(http.StatusInternalServerError)
-				if _, err := fmt.Fprintf(writer, "Error during getting id: %v\n", err); err != nil {
-					log.Printf("write response: %v", err)
+				if _, werr := fmt.Fprintf(writer, "Error during creating new run: %v\n", err); werr != nil {
+					log.Printf("write response: %v", werr)
 				}
 				return
 			}
+
 			writer.WriteHeader(http.StatusCreated)
-			if err := json.NewEncoder(writer).Encode(map[string]int{"run_id": id}); err != nil {
+			if err := json.NewEncoder(writer).Encode(map[string]int{"run_id": runID}); err != nil {
 				log.Printf("write response: %v", err)
 			}
 		}
@@ -82,7 +81,7 @@ func (a *App) RunHandler(writer http.ResponseWriter, r *http.Request) {
 				}
 				return
 			}
-			id, err := strconv.Atoi(idStr)
+			runID, err := strconv.Atoi(idStr)
 			if err != nil {
 				writer.WriteHeader(http.StatusBadRequest)
 				if _, err := fmt.Fprintf(writer, "Error during getting id: %v\n", err); err != nil {
@@ -90,7 +89,7 @@ func (a *App) RunHandler(writer http.ResponseWriter, r *http.Request) {
 				}
 				return
 			}
-			if id <= 0 {
+			if runID <= 0 {
 				writer.WriteHeader(http.StatusBadRequest)
 				if _, err := fmt.Fprintf(writer, "Id can't be negative number"); err != nil {
 					log.Printf("write response: %v", err)
@@ -98,19 +97,13 @@ func (a *App) RunHandler(writer http.ResponseWriter, r *http.Request) {
 				return
 			}
 
-			row := a.pool.QueryRow(ctx, `
-				SELECT id, created_at, finished_at, status, total_rows, ok_rows, bad_rows FROM runs
-				WHERE id = ($1)
-				`, id)
-
 			res := RunEntry{}
-			if err := row.Scan(&res.Id, &res.Created_at, &res.Finished_at, &res.Status, &res.Total_rows, &res.Ok_rows, &res.Bad_rows); err != nil {
+			if err := getRunByID(ctx, a.pool, runID, &res); err != nil {
 				if err == pgx.ErrNoRows {
 					writer.WriteHeader(http.StatusNotFound)
 				} else {
 					writer.WriteHeader(http.StatusInternalServerError)
 				}
-
 				if _, err := fmt.Fprintf(writer, "Error during getting entry from table: %v\n", err); err != nil {
 					log.Printf("write response: %v", err)
 				}
@@ -168,44 +161,155 @@ func (a *App) insertRowHandler(writer http.ResponseWriter, r *http.Request) {
 
 	var payload map[string]any
 	if err := json.Unmarshal(bodybytes, &payload); err != nil {
-		row := a.pool.QueryRow(ctx, `
-		INSERT INTO etl_dead_letters(run_id, raw_line, error, payload)
-		VALUES ($1, $2, $3, NULL)
-		RETURNING id
-		`, runId, string(bodybytes), err.Error())
-
-		rowId := -1
-		if err := row.Scan(&rowId); err != nil {
+		payload = nil
+		deadID, err := insertDeadLetter(ctx, a.pool, runId, string(bodybytes), err.Error(), payload)
+		if err != nil {
 			writer.WriteHeader(http.StatusInternalServerError)
-			if _, werr := fmt.Fprintf(writer, "Error during inserting payload into table etl_dead_letters: %v", err); werr != nil {
+			if _, werr := fmt.Fprintf(writer, "Error during inserting dead letter: %v", err); werr != nil {
 				log.Printf("write response: %v", werr)
 			}
 			return
 		}
 
 		writer.WriteHeader(http.StatusAccepted)
-		if err := json.NewEncoder(writer).Encode(map[string]int{"dead_letter_id": rowId}); err != nil {
+		if err := json.NewEncoder(writer).Encode(map[string]int{"dead_letter_id": deadID}); err != nil {
 			log.Printf("write response: %v", err)
 		}
 		return
 	}
-	row := a.pool.QueryRow(ctx, `
-	INSERT INTO etl_rows(run_id, payload)
-	VALUES ($1, $2)
-	RETURNING id;
-	`, runId, payload)
-	rowId := -1
-	if err := row.Scan(&rowId); err != nil {
+	rowID, err := insertRow(ctx, a.pool, runId, payload)
+	if err != nil {
 		writer.WriteHeader(http.StatusInternalServerError)
-		if _, werr := fmt.Fprintf(writer, "Error during inserting payload into table etl_rows: %v", err); werr != nil {
+		if _, werr := fmt.Fprintf(writer, "Error during inserting row: %v", err); werr != nil {
+			log.Printf("write response: %v", werr)
+		}
+		return
+	}
+	writer.WriteHeader(http.StatusOK)
+	if err := json.NewEncoder(writer).Encode(map[string]int{"row_id": rowID}); err != nil {
+		log.Printf("write response: %v", err)
+	}
+
+}
+
+func (a *App) ingestCSVHandler(writer http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writer.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	runID := -1
+	var err error
+	idStr := r.URL.Query().Get("run_id")
+	if idStr == "" {
+		runID, err = createRun(ctx, a.pool)
+		if err != nil {
+			writer.WriteHeader(http.StatusInternalServerError)
+			if _, werr := fmt.Fprintf(writer, "Error during creating new run: %v\n", err); werr != nil {
+				log.Printf("write response: %v", werr)
+			}
+			return
+		}
+	} else {
+		runID, err = strconv.Atoi(idStr)
+		if err != nil {
+			writer.WriteHeader(http.StatusBadRequest)
+			if _, err := fmt.Fprintf(writer, "Error during getting id: %v\n", err); err != nil {
+				log.Printf("write response: %v", err)
+			}
+			return
+		}
+		if runID <= 0 {
+			writer.WriteHeader(http.StatusBadRequest)
+			if _, err := fmt.Fprintf(writer, "Id can't be negative number"); err != nil {
+				log.Printf("write response: %v", err)
+			}
+			return
+		}
+		res := RunEntry{}
+		if err := getRunByID(ctx, a.pool, runID, &res); err != nil {
+			if err == pgx.ErrNoRows {
+				writer.WriteHeader(http.StatusNotFound)
+			} else {
+				writer.WriteHeader(http.StatusInternalServerError)
+			}
+			if _, err := fmt.Fprintf(writer, "Error during getting entry from table: %v\n", err); err != nil {
+				log.Printf("write response: %v", err)
+			}
+			return
+		}
+	}
+
+	reader := csv.NewReader(r.Body)
+	header, err := reader.Read()
+	if err != nil {
+		writer.WriteHeader(http.StatusBadRequest)
+		if _, werr := fmt.Fprintf(writer, "Error during reading header: %v\n", err); werr != nil {
+			log.Printf("write response: %v", werr)
+		}
+		return
+	}
+	numCol := len(header)
+	badRows, okRows, totalRows := 0, 0, 0
+	for {
+		record, err := reader.Read()
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			writer.WriteHeader(http.StatusInternalServerError)
+			if _, werr := fmt.Fprintf(writer, "Error during reading csv: %v\n", err); werr != nil {
+				log.Printf("write response: %v", werr)
+			}
+			return
+		}
+		totalRows++
+		payload := map[string]any{}
+		if len(record) != numCol {
+			if _, err := insertDeadLetter(ctx, a.pool, runID, strings.Join(record, ","), "wrong number of columns", payload); err != nil {
+				log.Printf("Error during inserting Dead Letter with runID %d: %v\n", runID, err)
+			}
+			badRows++
+		} else {
+			for i, colName := range header {
+				payload[colName] = record[i]
+			}
+			if _, err := insertRow(ctx, a.pool, runID, payload); err != nil {
+				if _, err := insertDeadLetter(ctx, a.pool, runID, strings.Join(record, ","), err.Error(), payload); err != nil {
+					log.Printf("Error during inserting Dead Letter with runID %d: %v\n", runID, err)
+				}
+				badRows++
+			} else {
+				okRows++
+			}
+		}
+	}
+
+	if err := updateRunStats(ctx, a.pool, runID, totalRows, okRows, badRows); err != nil {
+		writer.WriteHeader(http.StatusInternalServerError)
+		if _, werr := fmt.Fprintf(writer, "Error during updating run entry %d: %v\n", runID, err); werr != nil {
 			log.Printf("write response: %v", werr)
 		}
 		return
 	}
 
+	res := RunEntry{}
+	if err := getRunByID(ctx, a.pool, runID, &res); err != nil {
+		if err == pgx.ErrNoRows {
+			writer.WriteHeader(http.StatusNotFound)
+		} else {
+			writer.WriteHeader(http.StatusInternalServerError)
+		}
+		if _, err := fmt.Fprintf(writer, "Error during getting entry from table: %v\n", err); err != nil {
+			log.Printf("write response: %v", err)
+		}
+		return
+	}
+	writer.Header().Set("Content-Type", "application/json; charset=utf-8")
 	writer.WriteHeader(http.StatusOK)
-	if err := json.NewEncoder(writer).Encode(map[string]int{"row_id": rowId}); err != nil {
+	if err := json.NewEncoder(writer).Encode(res); err != nil {
 		log.Printf("write response: %v", err)
 	}
-
 }

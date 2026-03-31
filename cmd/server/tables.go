@@ -1,6 +1,8 @@
 package main
 
-import "time"
+import (
+	"time"
+)
 
 type RunEntry struct {
 	Id          int        `json:"id"`

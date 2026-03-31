@@ -59,6 +59,7 @@ func main() {
 	mux.HandleFunc("/readyz", app.readyzHandler)
 	mux.HandleFunc("/v1/runs", app.RunHandler)
 	mux.HandleFunc("/v1/rows", app.insertRowHandler)
+	mux.HandleFunc("/v1/ingest/csv", app.ingestCSVHandler)
 
 	serverErr := make(chan error, 1)
 	go func() {
