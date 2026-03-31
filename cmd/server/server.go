@@ -55,10 +55,10 @@ func main() {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
-	mux.HandleFunc("/healthz", app.healthzHandler)
-	mux.HandleFunc("/readyz", app.readyzHandler)
-	mux.HandleFunc("/v1/runs", app.RunHandler)
-	mux.HandleFunc("/v1/rows", app.insertRowHandler)
+	mux.HandleFunc("/dev/healthz", app.healthzHandler)
+	mux.HandleFunc("/dev/readyz", app.readyzHandler)
+	mux.HandleFunc("/dev/runs", app.RunHandler)
+	mux.HandleFunc("/dev/rows", app.insertRowHandler)
 	mux.HandleFunc("/v1/pipelines", app.pipelinesHandler)
 	mux.HandleFunc("/v1/ingest/csv", app.ingestCSVHandler)
 	mux.HandleFunc("/v1/pipelines/ingest/csv", app.pipelineIngestCSVHandler)
