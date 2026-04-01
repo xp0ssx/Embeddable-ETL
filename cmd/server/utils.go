@@ -143,6 +143,9 @@ func validateRowRecord(schema Schema, header []string, record []string) (map[str
 			}
 			continue
 		}
+		if len(record) > len(schema.Fields) {
+			return nil, fmt.Errorf("too much columns")
+		}
 		rawVal := record[idx]
 		if strings.TrimSpace(rawVal) == "" {
 			if field.Required {
