@@ -1,0 +1,7 @@
+{
+  "fields": [
+    {"name": "email", "type": "string", "required": true, "format": "email"},
+    {"name": "age", "type": "int", "required": true},
+    {"name": "note", "type": "string", "required": false}
+  ]
+}
